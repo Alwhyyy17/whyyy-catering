@@ -718,18 +718,26 @@ def orderan():
 @app.route('/bayar', methods=['POST'])
 def bayar():
     try:
+        # Ambil data JSON atau form-data
         data = request.get_json() if request.is_json else request.form.to_dict()
 
         order_id = data.get('order_id')
         tanggal_str = data.get('tanggal_give')
 
         if not order_id or not tanggal_str:
-            return jsonify({"result": "error", "message": "Order ID dan tanggal wajib diisi."}), 400
+            return jsonify({
+                "result": "error",
+                "message": "Order ID dan tanggal wajib diisi."
+            }), 400
 
+        # Cari semua item order dengan order_id yang sama
         orders = list(db.orderan.find({'order_id': order_id}))
 
         if not orders:
-            return jsonify({"result": "error", "message": "Order tidak ditemukan."}), 404
+            return jsonify({
+                "result": "error",
+                "message": "Order tidak ditemukan."
+            }), 404
 
         existing_token = orders[0].get('snap_token')
         status_order = orders[0].get('status')
@@ -742,27 +750,32 @@ def bayar():
                 "msg": "Transaksi ini sudah lunas. Tidak perlu bayar lagi."
             })
 
-        # Jika sudah punya snap token, kirim token lama
+        # Jika sudah ada snap token, kirim token lama
         if existing_token:
             return jsonify({
                 "result": "success",
                 "snap_token": existing_token,
                 "order_id": order_id,
-                "msg": "Silakan lanjutkan ke pembayaran sebelumnya"
+                "msg": "Silakan lanjutkan ke pembayaran sebelumnya."
             })
 
-        # Buat Snap Token baru
+        # Generate start_time untuk expiry Midtrans
         try:
             waktu_obj = datetime.strptime(
                 tanggal_str, "%Y-%m-%d %H:%M:%S"
             ).replace(tzinfo=ZoneInfo("Asia/Jakarta"))
             start_time = waktu_obj.strftime("%Y-%m-%d %H:%M:%S %z")
         except ValueError:
-            return jsonify({"result": "error", "message": "Format tanggal tidak valid."}), 400
+            return jsonify({
+                "result": "error",
+                "message": "Format tanggal tidak valid."
+            }), 400
 
+        # Hitung total harga semua item
         total = sum(int(item.get('harga', 0)) for item in orders)
         username = orders[0].get('username', 'User')
 
+        # Persiapkan payload ke Midtrans
         transaction = {
             "transaction_details": {
                 "order_id": order_id,
@@ -779,13 +792,14 @@ def bayar():
             }
         }
 
+        # Buat Snap Token
         response = snap.create_transaction(transaction)
         snap_token = response.get('token')
 
         if not snap_token:
             raise Exception("Gagal mendapatkan Snap Token dari Midtrans.")
 
-        # Simpan token saja, tanpa status
+        # Simpan snap token ke semua dokumen order dengan order_id sama
         db.orderan.update_many(
             {'order_id': order_id},
             {'$set': {'snap_token': snap_token}}
@@ -795,7 +809,7 @@ def bayar():
             "result": "success",
             "snap_token": snap_token,
             "order_id": order_id,
-            "msg": "Silakan lanjutkan ke pembayaran"
+            "msg": "Silakan lanjutkan ke pembayaran."
         })
 
     except Exception as e:
@@ -804,76 +818,6 @@ def bayar():
             "result": "error",
             "message": f"Terjadi kesalahan server: {str(e)}"
         }), 500
-
-
-# @app.route('/get-snap-token', methods=['POST'])
-# def get_snap_token():
-#     try:
-#         data = request.get_json() if request.is_json else request.form.to_dict()
-#         order_id = data.get('order_id')
-
-#         if not order_id:
-#             return jsonify({'result': 'error', 'message': 'Order ID tidak ditemukan'}), 400
-
-#         order = db.orderan.find_one({'order_id': order_id})
-#         if not order:
-#             return jsonify({'result': 'error', 'message': 'Order tidak ditemukan'}), 404
-
-#         snap_token = order.get('snap_token')
-#         if not snap_token:
-#             return jsonify({'result': 'error', 'message': 'Token pembayaran tidak tersedia'}), 404
-
-#         return jsonify({'result': 'success', 'snap_token': snap_token})
-#     except Exception as e:
-#         return jsonify({'result': 'error', 'message': str(e)}), 500
-
-
-@app.route('/payment-callback', methods=['POST'])
-def payment_callback():
-    try:
-        notification = request.get_json()
-        transaction_status = notification.get('transaction_status')
-        order_id = notification.get('order_id')
-        status_message = notification.get('status_message', '')
-        payment_type = notification.get('payment_type', '')
-        fraud_status = notification.get('fraud_status', '')
-
-        if not order_id:
-            return jsonify({'message': 'Order ID tidak ditemukan'}), 400
-
-        # Status default
-        status = "Diproses"
-
-        # Mapping status Midtrans → status internal
-        if transaction_status in ['settlement', 'capture']:
-            status = "Sudah Bayar"
-        elif transaction_status in ['cancel', 'deny', 'expire']:
-            status = "Dibatalkan"
-        else:
-            status = "Diproses"
-
-        update_fields = {
-            'status': status,
-            'transaction_status': transaction_status,
-            'payment_type': payment_type,
-            'status_message': status_message,
-            'fraud_status': fraud_status
-        }
-
-        # Jika pembayaran final (lunas atau batal), hapus snap_token
-        if status in ['Sudah Bayar', 'Dibatalkan']:
-            update_fields['snap_token'] = None
-
-        db.orderan.update_many(
-            {'order_id': order_id},
-            {'$set': update_fields}
-        )
-
-        return jsonify({'message': f'Status pembayaran diperbarui ke: {status}'}), 200
-
-    except Exception as e:
-        logging.exception("Gagal memproses notifikasi Midtrans:")
-        return jsonify({'message': 'Terjadi kesalahan pada server'}), 500
 
 
 @app.route('/orders')
