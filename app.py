@@ -394,7 +394,7 @@ def reset_password():
 
 @app.route('/tambah')
 def tambah():
-    return render_template('tambahbuku.html')
+    return render_template('tambahitem.html')
 
 
 @app.route("/tambahbuku", methods=["POST"])
